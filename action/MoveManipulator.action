@@ -1,0 +1,11 @@
+string movement_type          # "pose", "joint", "named", "cartesian"
+geometry_msgs/Pose pose_target
+string named_target
+float64[] joint_values
+geometry_msgs/Pose[] cartesian_waypoints
+micpp_manymove_planner/MovementConfig config
+---
+bool success
+string message
+---
+float32 progress
