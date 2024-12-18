@@ -25,7 +25,7 @@ int main(int argc, char **argv)
     std::string tcp_frame;
     node->get_parameter_or<std::string>("tcp_frame", tcp_frame, "link_tcp");
 
-    MovementConfig max_move_config;
+    micpp_manymove_planner::msg::MovementConfig max_move_config;
     node->get_parameter_or<double>("velocity_scaling_factor", max_move_config.velocity_scaling_factor, 0.5);
     node->get_parameter_or<double>("acceleration_scaling_factor", max_move_config.acceleration_scaling_factor, 0.5);
     node->get_parameter_or<double>("step_size", max_move_config.step_size, 0.05);
@@ -36,12 +36,12 @@ int main(int argc, char **argv)
     node->get_parameter_or<int>("plan_number_limit", max_move_config.plan_number_limit, 32);
     node->get_parameter_or<std::string>("smoothing_type", max_move_config.smoothing_type, "iterative_parabolic");
 
-    MovementConfig mid_move_config = max_move_config;
+    micpp_manymove_planner::msg::MovementConfig mid_move_config = max_move_config;
     mid_move_config.velocity_scaling_factor = max_move_config.velocity_scaling_factor / 2.0;
     mid_move_config.acceleration_scaling_factor = max_move_config.acceleration_scaling_factor / 2.0;
     mid_move_config.max_cartesian_speed = 0.2;
 
-    MovementConfig slow_move_config = max_move_config;
+    micpp_manymove_planner::msg::MovementConfig slow_move_config = max_move_config;
     slow_move_config.velocity_scaling_factor = max_move_config.velocity_scaling_factor / 4.0;
     slow_move_config.acceleration_scaling_factor = max_move_config.acceleration_scaling_factor / 4.0;
     slow_move_config.max_cartesian_speed = 0.05;

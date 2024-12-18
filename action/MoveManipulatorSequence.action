@@ -1,0 +1,7 @@
+# Goal
+micpp_manymove_planner/MoveManipulatorGoal[] goals
+---
+bool success
+string message
+---
+float32 progress

@@ -28,15 +28,13 @@ def generate_launch_description():
         )
         .robot_description()
         .trajectory_execution(file_path="config/lite6/fake_controllers.yaml")
-        .planning_scene_monitor(
-            publish_robot_description=True, publish_robot_description_semantic=True
-        )
+        .planning_scene_monitor(publish_robot_description=True, publish_robot_description_semantic=True)
         .planning_pipelines(pipelines=["ompl"])
         .moveit_cpp(file_path=get_package_share_directory("micpp_manymove_planner") + "/config/moveit_cpp.yaml")
         .to_moveit_configs()
     )
 
-    run_move_group_node = Node(
+    run_moveit_cpp_node = Node(
         package="micpp_manymove_planner",
         executable="standalone_micpp_demo",
         output="screen",
@@ -121,12 +119,15 @@ def generate_launch_description():
             rviz_node,
             static_tf,
             robot_state_publisher,
-            run_move_group_node,
+            run_moveit_cpp_node,
             ros2_control_node,
             joint_state_broadcaster_spawner,
             arm_controller_spawner,
         ]
     )
+
+
+### Original moveitcpp demo launcher with panda robot for reference
 
 
 # import os

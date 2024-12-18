@@ -1,12 +1,10 @@
 cmake_minimum_required(VERSION 3.8)
 project(micpp_manymove_planner)
 
-# Compiler options
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# Find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(moveit_core REQUIRED)
@@ -18,28 +16,27 @@ find_package(pluginlib REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(action_msgs REQUIRED)
+find_package(control_msgs REQUIRED)
 
 # Generate messages and actions
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/MoveManipulator.action"
+  "action/MoveManipulatorSequence.action"
   "msg/MovementConfig.msg"
+  "msg/MoveManipulatorGoal.msg"
   DEPENDENCIES geometry_msgs action_msgs
 )
 
 # Ensure that message generation is complete before proceeding
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
-# Export dependencies for downstream packages
 ament_export_dependencies(rosidl_default_runtime)
 
-# Include directories
 include_directories(include)
 
 # Create the shared library
 add_library(micpp_manymove_planner_lib
   src/micpp_manymove_planner.cpp
-  # If you have additional source files (e.g., ManyMovePlanner.cpp), add them here
-  # src/ManyMovePlanner.cpp
 )
 
 # Link dependencies to the shared library
@@ -51,9 +48,10 @@ ament_target_dependencies(micpp_manymove_planner_lib
   geometry_msgs
   moveit_visual_tools
   pluginlib
+  rosidl_default_runtime
 )
 
-# Optionally link to the typesupport library
+# Link the typesupport library
 target_link_libraries(micpp_manymove_planner_lib
   ${cpp_typesupport_target}
 )
@@ -124,8 +122,7 @@ install(TARGETS client_example_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
-# **New Section: Standalone MoveItCpp Demo**
-# Add a new executable for standalone_micpp_demo.cpp
+# Standalone MoveItCpp Demo
 add_executable(standalone_micpp_demo
   src/standalone_micpp_demo.cpp
 )

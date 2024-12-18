@@ -1,3 +1,5 @@
+// src/micpp_manymove_planner.cpp
+
 #include "micpp_manymove_planner/micpp_manymove_planner.hpp"
 
 #include <moveit/robot_state/cartesian_interpolator.h>
@@ -7,6 +9,13 @@
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <algorithm>
 
+#include <memory>
+#include <vector>
+
+// Using declarations for cleaner code
+using micpp_manymove_planner::msg::MovementConfig;
+
+// Constructor
 ManyMovePlanner::ManyMovePlanner(
     const rclcpp::Node::SharedPtr& node,
     const std::string& planning_group,
@@ -14,53 +23,51 @@ ManyMovePlanner::ManyMovePlanner(
     const std::string& tcp_frame)
 : node_(node), logger_(node->get_logger()), base_frame_(base_frame), tcp_frame_(tcp_frame)
 {
-    // Initialize MoveItCpp without explicitly requesting the planning scene via a service
+    // Initialize MoveItCpp
     moveit_cpp_ptr_ = std::make_shared<moveit_cpp::MoveItCpp>(node_);
 
-    auto psm = moveit_cpp_ptr_->getPlanningSceneMonitor();
-    // Ensure the scene monitor is started (if not already done by MoveItCpp internal configs)
-    psm->startSceneMonitor("monitored_planning_scene");
-    psm->startStateMonitor();
+    // Provide the PlanningScene service
+    moveit_cpp_ptr_->getPlanningSceneMonitor()->providePlanningSceneService();
 
-    // Wait for current robot state to ensure we have at least one update
-    if (!psm->waitForCurrentRobotState(node_->now(), 5.0))
-    {
-        RCLCPP_WARN(logger_, "No current robot state received within 5 seconds.");
-    }
-
+    // Initialize PlanningComponent
     planning_components_ = std::make_shared<moveit_cpp::PlanningComponent>(planning_group, moveit_cpp_ptr_);
-    RCLCPP_INFO(logger_, "ManipulatorMotionPlanner initialized with group: %s", planning_group.c_str());
+    RCLCPP_INFO(logger_, "ManyMovePlanner initialized with group: %s", planning_group.c_str());
 }
 
+// Compute Path Length
 double ManyMovePlanner::computePathLength(const robot_trajectory::RobotTrajectory &trajectory) const
 {
     double total_length = 0.0;
 
-    auto computeJointPathLength = [&](const robot_trajectory::RobotTrajectory &traj) {
+    // Compute joint-space path length
+    auto computeJointPathLength = [&](const robot_trajectory::RobotTrajectory &traj) -> double
+    {
         double length = 0.0;
-        for (size_t i=1; i<traj.getWayPointCount(); i++)
+        for (size_t i = 1; i < traj.getWayPointCount(); ++i)
         {
-            const auto &prev = traj.getWayPoint(i-1);
+            const auto &prev = traj.getWayPoint(i - 1);
             const auto &curr = traj.getWayPoint(i);
             std::vector<double> prev_positions, curr_positions;
-            prev.copyJointGroupPositions(traj.getGroupName(), prev_positions);
-            curr.copyJointGroupPositions(traj.getGroupName(), curr_positions);
+            prev.copyJointGroupPositions(planning_components_->getPlanningGroupName(), prev_positions);
+            curr.copyJointGroupPositions(planning_components_->getPlanningGroupName(), curr_positions);
             double seg_len = 0.0;
-            for (size_t j=0; j<prev_positions.size(); j++)
+            for (size_t j = 0; j < prev_positions.size(); ++j)
             {
-                double diff = curr_positions[j]-prev_positions[j];
-                seg_len += diff*diff;
+                double diff = curr_positions[j] - prev_positions[j];
+                seg_len += diff * diff;
             }
             length += std::sqrt(seg_len);
         }
         return length;
     };
 
-    auto computeCartesianPathLength = [&](const robot_trajectory::RobotTrajectory &traj) {
+    // Compute Cartesian path length
+    auto computeCartesianPathLength = [&](const robot_trajectory::RobotTrajectory &traj) -> double
+    {
         double length = 0.0;
-        for (size_t i=1; i<traj.getWayPointCount(); i++)
+        for (size_t i = 1; i < traj.getWayPointCount(); ++i)
         {
-            const auto &prev = traj.getWayPoint(i-1);
+            const auto &prev = traj.getWayPoint(i - 1);
             const auto &curr = traj.getWayPoint(i);
             Eigen::Isometry3d prev_pose = prev.getGlobalLinkTransform(tcp_frame_);
             Eigen::Isometry3d curr_pose = curr.getGlobalLinkTransform(tcp_frame_);
@@ -73,26 +80,31 @@ double ManyMovePlanner::computePathLength(const robot_trajectory::RobotTrajector
     double joint_length = computeJointPathLength(trajectory);
     double cart_length = computeCartesianPathLength(trajectory);
 
-    total_length = (2*cart_length) + (joint_length/2.0);
+    total_length = (2 * cart_length) + (joint_length / 2.0);
     return total_length;
 }
 
+// Compute Max Cartesian Speed
 double ManyMovePlanner::computeMaxCartesianSpeed(const robot_trajectory::RobotTrajectoryPtr &trajectory) const
 {
     if (trajectory->getWayPointCount() < 2) return 0.0;
     double max_speed = 0.0;
-    for (size_t i=1; i<trajectory->getWayPointCount(); i++)
+    for (size_t i = 1; i < trajectory->getWayPointCount(); i++)
     {
-        Eigen::Isometry3d prev_pose = trajectory->getWayPoint(i-1).getGlobalLinkTransform(tcp_frame_);
+        Eigen::Isometry3d prev_pose = trajectory->getWayPoint(i - 1).getGlobalLinkTransform(tcp_frame_);
         Eigen::Isometry3d curr_pose = trajectory->getWayPoint(i).getGlobalLinkTransform(tcp_frame_);
         double dist = (curr_pose.translation() - prev_pose.translation()).norm();
         double dt = trajectory->getWayPointDurationFromPrevious(i);
-        double speed = dist/dt;
-        if (speed > max_speed) max_speed = speed;
+        if (dt > 0.0)
+        {
+            double speed = dist / dt;
+            if (speed > max_speed) max_speed = speed;
+        }
     }
     return max_speed;
 }
 
+// Apply Time Parameterization
 bool ManyMovePlanner::applyTimeParameterization(
     robot_trajectory::RobotTrajectoryPtr &trajectory, const MovementConfig &config)
 {
@@ -100,11 +112,11 @@ bool ManyMovePlanner::applyTimeParameterization(
     double acceleration_scaling_factor = config.acceleration_scaling_factor;
 
     const int max_iterations = 5;
-    for (int iteration=0; iteration<max_iterations; iteration++)
+    for (int iteration = 0; iteration < max_iterations; iteration++)
     {
-        // reset durations
-        for (size_t i=1; i<trajectory->getWayPointCount(); i++)
-            trajectory->setWayPointDurationFromPrevious(i,0.0);
+        // Reset durations
+        for (size_t i = 1; i < trajectory->getWayPointCount(); i++)
+            trajectory->setWayPointDurationFromPrevious(i, 0.0);
 
         bool time_param_success = false;
         if (config.smoothing_type == "time_optimal")
@@ -127,14 +139,14 @@ bool ManyMovePlanner::applyTimeParameterization(
         double max_cartesian_speed = computeMaxCartesianSpeed(trajectory);
         if (max_cartesian_speed <= config.max_cartesian_speed)
         {
-            return true; // success
+            return true; // Success
         }
         else
         {
             double scale = config.max_cartesian_speed / max_cartesian_speed;
             velocity_scaling_factor *= scale;
             // Adjust acceleration similarly (heuristic):
-            acceleration_scaling_factor = (acceleration_scaling_factor*scale + acceleration_scaling_factor)/2.0;
+            acceleration_scaling_factor = (acceleration_scaling_factor * scale + acceleration_scaling_factor) / 2.0;
 
             if (velocity_scaling_factor < 0.01 || acceleration_scaling_factor < 0.01)
             {
@@ -148,6 +160,7 @@ bool ManyMovePlanner::applyTimeParameterization(
     return false;
 }
 
+// Execute Trajectory
 bool ManyMovePlanner::executeTrajectory(const robot_trajectory::RobotTrajectoryPtr &trajectory)
 {
     bool success = moveit_cpp_ptr_->execute(planning_components_->getPlanningGroupName(), trajectory);
@@ -165,22 +178,23 @@ bool ManyMovePlanner::executeTrajectory(const robot_trajectory::RobotTrajectoryP
     return success;
 }
 
+// Move to Pose Target
 bool ManyMovePlanner::moveToPoseTarget(const geometry_msgs::msg::Pose& target_pose, const MovementConfig &config)
 {
     geometry_msgs::msg::PoseStamped pose_stamped;
     pose_stamped.header.frame_id = base_frame_;
     pose_stamped.pose = target_pose;
 
-    int retry=0;
-    bool exec_success=false;
+    int retry = 0;
+    bool exec_success = false;
 
     while (retry < config.max_exec_tries && !exec_success)
     {
         planning_components_->setGoal(pose_stamped, tcp_frame_);
 
-        std::vector<std::pair<moveit_cpp::PlanningComponent::PlanSolution,double>> trajectories;
-        int attempts=0;
-        while (attempts<config.plan_number_limit && (int)trajectories.size()<config.plan_number_target)
+        std::vector<std::pair<moveit_cpp::PlanningComponent::PlanSolution, double>> trajectories;
+        int attempts = 0;
+        while (attempts < config.plan_number_limit && static_cast<int>(trajectories.size()) < config.plan_number_target)
         {
             planning_components_->setStartStateToCurrentState();
             auto plan_solution = planning_components_->plan();
@@ -191,7 +205,7 @@ bool ManyMovePlanner::moveToPoseTarget(const geometry_msgs::msg::Pose& target_po
             }
             else
             {
-                RCLCPP_WARN(logger_, "Pose target planning attempt %d failed", attempts+1);
+                RCLCPP_WARN(logger_, "Pose target planning attempt %d failed", attempts + 1);
             }
             attempts++;
         }
@@ -202,10 +216,19 @@ bool ManyMovePlanner::moveToPoseTarget(const geometry_msgs::msg::Pose& target_po
             return false;
         }
 
+        // Select the trajectory with the minimum path length
         auto shortest = std::min_element(trajectories.begin(), trajectories.end(),
-            [](auto &a, auto &b){return a.second < b.second;});
+            [](const std::pair<moveit_cpp::PlanningComponent::PlanSolution, double> &a,
+               const std::pair<moveit_cpp::PlanningComponent::PlanSolution, double> &b) -> bool {
+                return a.second < b.second;
+            });
 
-        if (!applyTimeParameterization(shortest->first.trajectory, config)) return false;
+        if (!applyTimeParameterization(shortest->first.trajectory, config))
+        {
+            RCLCPP_ERROR(logger_, "Time parameterization failed for Pose Target.");
+            return false;
+        }
+
         exec_success = executeTrajectory(shortest->first.trajectory);
         retry++;
     }
@@ -213,21 +236,22 @@ bool ManyMovePlanner::moveToPoseTarget(const geometry_msgs::msg::Pose& target_po
     return exec_success;
 }
 
+// Move to Joint Target
 bool ManyMovePlanner::moveToJointTarget(const std::vector<double>& joint_values, const MovementConfig &config)
 {
-    int retry=0;
-    bool exec_success=false;
-    while (retry<config.max_exec_tries && !exec_success)
+    int retry = 0;
+    bool exec_success = false;
+    while (retry < config.max_exec_tries && !exec_success)
     {
-        auto current_state = moveit_cpp_ptr_->getCurrentState();
-        moveit::core::RobotState goal_state(*current_state);
+        // Corrected constructor: pass the RobotModelConstPtr directly
+        moveit::core::RobotState goal_state(moveit_cpp_ptr_->getRobotModel());
         goal_state.setJointGroupPositions(planning_components_->getPlanningGroupName(), joint_values);
         goal_state.update();
         planning_components_->setGoal(goal_state);
 
-        std::vector<std::pair<moveit_cpp::PlanningComponent::PlanSolution,double>> trajectories;
-        int attempts=0;
-        while (attempts<config.plan_number_limit && (int)trajectories.size()<config.plan_number_target)
+        std::vector<std::pair<moveit_cpp::PlanningComponent::PlanSolution, double>> trajectories;
+        int attempts = 0;
+        while (attempts < config.plan_number_limit && static_cast<int>(trajectories.size()) < config.plan_number_target)
         {
             planning_components_->setStartStateToCurrentState();
             auto plan_solution = planning_components_->plan();
@@ -238,7 +262,7 @@ bool ManyMovePlanner::moveToJointTarget(const std::vector<double>& joint_values,
             }
             else
             {
-                RCLCPP_WARN(logger_, "Joint target planning attempt %d failed", attempts+1);
+                RCLCPP_WARN(logger_, "Joint target planning attempt %d failed", attempts + 1);
             }
             attempts++;
         }
@@ -249,27 +273,37 @@ bool ManyMovePlanner::moveToJointTarget(const std::vector<double>& joint_values,
             return false;
         }
 
+        // Select the trajectory with the minimum path length
         auto shortest = std::min_element(trajectories.begin(), trajectories.end(),
-            [](auto&a, auto&b){return a.second < b.second;});
+            [](const std::pair<moveit_cpp::PlanningComponent::PlanSolution, double> &a,
+               const std::pair<moveit_cpp::PlanningComponent::PlanSolution, double> &b) -> bool {
+                return a.second < b.second;
+            });
 
-        if(!applyTimeParameterization(shortest->first.trajectory, config)) return false;
+        if (!applyTimeParameterization(shortest->first.trajectory, config))
+        {
+            RCLCPP_ERROR(logger_, "Time parameterization failed for Joint Target.");
+            return false;
+        }
+
         exec_success = executeTrajectory(shortest->first.trajectory);
         retry++;
     }
     return exec_success;
 }
 
+// Move to Named Target
 bool ManyMovePlanner::moveToNamedTarget(const std::string& target_name, const MovementConfig &config)
 {
-    int retry=0;
-    bool exec_success=false;
-    while (retry<config.max_exec_tries && !exec_success)
+    int retry = 0;
+    bool exec_success = false;
+    while (retry < config.max_exec_tries && !exec_success)
     {
         planning_components_->setGoal(target_name);
 
-        std::vector<std::pair<moveit_cpp::PlanningComponent::PlanSolution,double>> trajectories;
-        int attempts=0;
-        while (attempts<config.plan_number_limit && (int)trajectories.size()<config.plan_number_target)
+        std::vector<std::pair<moveit_cpp::PlanningComponent::PlanSolution, double>> trajectories;
+        int attempts = 0;
+        while (attempts < config.plan_number_limit && static_cast<int>(trajectories.size()) < config.plan_number_target)
         {
             planning_components_->setStartStateToCurrentState();
             auto plan_solution = planning_components_->plan();
@@ -280,7 +314,7 @@ bool ManyMovePlanner::moveToNamedTarget(const std::string& target_name, const Mo
             }
             else
             {
-                RCLCPP_WARN(logger_, "Named target planning attempt %d failed", attempts+1);
+                RCLCPP_WARN(logger_, "Named target planning attempt %d failed", attempts + 1);
             }
             attempts++;
         }
@@ -291,54 +325,74 @@ bool ManyMovePlanner::moveToNamedTarget(const std::string& target_name, const Mo
             return false;
         }
 
+        // Select the trajectory with the minimum path length
         auto shortest = std::min_element(trajectories.begin(), trajectories.end(),
-            [](auto&a, auto&b){return a.second < b.second;});
+            [](const std::pair<moveit_cpp::PlanningComponent::PlanSolution, double> &a,
+               const std::pair<moveit_cpp::PlanningComponent::PlanSolution, double> &b) -> bool {
+                return a.second < b.second;
+            });
 
-        if(!applyTimeParameterization(shortest->first.trajectory, config)) return false;
+        if (!applyTimeParameterization(shortest->first.trajectory, config))
+        {
+            RCLCPP_ERROR(logger_, "Time parameterization failed for Named Target.");
+            return false;
+        }
+
         exec_success = executeTrajectory(shortest->first.trajectory);
         retry++;
     }
     return exec_success;
 }
 
+// Move Cartesian Path
 bool ManyMovePlanner::moveCartesianPath(
     const std::vector<geometry_msgs::msg::Pose>& waypoints,
     const MovementConfig &config,
     double linear_success_tolerance)
 {
-    int retry=0;
-    bool exec_success=false;
-    while (retry<config.max_exec_tries && !exec_success)
+    int retry = 0;
+    bool exec_success = false;
+    while (retry < config.max_exec_tries && !exec_success)
     {
         auto robot_model = moveit_cpp_ptr_->getRobotModel();
         auto jmg = robot_model->getJointModelGroup(planning_components_->getPlanningGroupName());
         const auto link_model = robot_model->getLinkModel(tcp_frame_);
 
-        std::vector<std::pair<robot_trajectory::RobotTrajectoryPtr,double>> trajectories;
-        int attempts=0;
+        std::vector<std::pair<robot_trajectory::RobotTrajectoryPtr, double>> trajectories;
+        int attempts = 0;
 
-        while (attempts<config.plan_number_limit && (int)trajectories.size()<config.plan_number_target)
+        while (attempts < config.plan_number_limit && static_cast<int>(trajectories.size()) < config.plan_number_target)
         {
             planning_components_->setStartStateToCurrentState();
             auto current_state = moveit_cpp_ptr_->getCurrentState();
             std::vector<moveit::core::RobotStatePtr> trajectory_states;
             EigenSTL::vector_Isometry3d waypoints_eigen;
-            for (auto &pose_msg : waypoints)
+            for (const auto &pose_msg : waypoints)
             {
                 Eigen::Isometry3d pose_eigen;
                 tf2::fromMsg(pose_msg, pose_eigen);
                 waypoints_eigen.push_back(pose_eigen);
             }
 
-            moveit::core::MaxEEFStep max_step(config.step_size, config.step_size*2);
+            // Compute Cartesian path
+            moveit::core::MaxEEFStep max_step(config.step_size, config.step_size * 2);
             moveit::core::JumpThreshold jump_thresh(config.jump_threshold, config.jump_threshold);
 
             auto validity_callback = [this](moveit::core::RobotState *state, const moveit::core::JointModelGroup *group,
-                                            const double *joint_group_variable_values)
+                                            const double *joint_group_variable_values) -> bool
             {
                 state->setJointGroupPositions(group, joint_group_variable_values);
                 state->update();
-                return !planning_scene_monitor::LockedPlanningSceneRO(moveit_cpp_ptr_->getPlanningSceneMonitor())->isStateColliding(*state, group->getName());
+                auto planning_scene = moveit_cpp_ptr_->getPlanningSceneMonitor()->getPlanningScene();
+                if (planning_scene)
+                {
+                    return !planning_scene->isStateColliding(*state, group->getName());
+                }
+                else
+                {
+                    RCLCPP_WARN(logger_, "Planning scene is not available for collision checking.");
+                    return false;
+                }
             };
 
             double fraction = moveit::core::CartesianInterpolator::computeCartesianPath(
@@ -348,13 +402,13 @@ bool ManyMovePlanner::moveCartesianPath(
             if (fraction >= linear_success_tolerance)
             {
                 auto trajectory = std::make_shared<robot_trajectory::RobotTrajectory>(robot_model, planning_components_->getPlanningGroupName());
-                for (auto &st: trajectory_states) trajectory->addSuffixWayPoint(st,0.0);
+                for (const auto &st : trajectory_states) trajectory->addSuffixWayPoint(*st, 0.0);
                 double length = computePathLength(*trajectory);
-                trajectories.emplace_back(trajectory,length);
+                trajectories.emplace_back(trajectory, length);
             }
             else
             {
-                RCLCPP_WARN(logger_, "Cartesian path attempt %d failed (%.2f%% achieved)", attempts+1, fraction*100.0);
+                RCLCPP_WARN(logger_, "Cartesian path attempt %d failed (%.2f%% achieved)", attempts + 1, fraction * 100.0);
             }
             attempts++;
         }
@@ -365,10 +419,19 @@ bool ManyMovePlanner::moveCartesianPath(
             return false;
         }
 
+        // Select the trajectory with the minimum path length
         auto shortest = std::min_element(trajectories.begin(), trajectories.end(),
-            [](auto&a, auto&b){return a.second < b.second;});
+            [](const std::pair<robot_trajectory::RobotTrajectoryPtr, double> &a,
+               const std::pair<robot_trajectory::RobotTrajectoryPtr, double> &b) -> bool {
+                return a.second < b.second;
+            });
 
-        if (!applyTimeParameterization(shortest->first, config)) return false;
+        if (!applyTimeParameterization(shortest->first, config))
+        {
+            RCLCPP_ERROR(logger_, "Time parameterization failed for Cartesian Path.");
+            return false;
+        }
+
         exec_success = executeTrajectory(shortest->first);
         retry++;
     }
@@ -376,9 +439,10 @@ bool ManyMovePlanner::moveCartesianPath(
     return exec_success;
 }
 
+// Find Collision Object
 bool ManyMovePlanner::findCollisionObject(const std::string &partial_id, moveit_msgs::msg::CollisionObject &found_object)
 {
-    auto client = node_->create_client<moveit_msgs::srv::GetPlanningScene>("/get_planning_scene");
+    auto client = node_->create_client<moveit_msgs::srv::GetPlanningScene>("get_planning_scene");
 
     // Wait until the service is available
     if (!client->wait_for_service(std::chrono::seconds(5))) {
