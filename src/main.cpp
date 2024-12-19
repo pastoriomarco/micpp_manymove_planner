@@ -1,5 +1,5 @@
 #include <rclcpp/rclcpp.hpp>
-#include <thread> // For std::thread
+#include <thread>
 #include "micpp_manymove_planner/micpp_manymove_planner.hpp"
 
 int main(int argc, char **argv)
